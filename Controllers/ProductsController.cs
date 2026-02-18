@@ -25,6 +25,7 @@ public class ProductsController : ControllerBase
     }
 
     [HttpGet]
+    [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Any, VaryByQueryKeys = new string[] { })]
     public ActionResult<IEnumerable<Product>> GetProducts()
     {
         _logger.LogInformation("Getting all products (SlowMode: {SlowMode})", EnableSlowEndpoints);
@@ -54,6 +55,7 @@ public class ProductsController : ControllerBase
     }
 
     [HttpGet("{id}")]
+    [ResponseCache(Duration = 300, Location = ResponseCacheLocation.Any, VaryByQueryKeys = new string[] { })]
     public ActionResult<Product> GetProduct(int id)
     {
         _logger.LogInformation("Getting product {ProductId} (SlowMode: {SlowMode})", id, EnableSlowEndpoints);
@@ -88,6 +90,7 @@ public class ProductsController : ControllerBase
     }
 
     [HttpGet("search")]
+    [ResponseCache(Duration = 120, Location = ResponseCacheLocation.Any, VaryByQueryKeys = new string[] { "query" })]
     public ActionResult<IEnumerable<Product>> SearchProducts([FromQuery] string query)
     {
         _logger.LogInformation("Searching products with query: {Query} (SlowMode: {SlowMode})", query, EnableSlowEndpoints);
