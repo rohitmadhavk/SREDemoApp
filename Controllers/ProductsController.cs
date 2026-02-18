@@ -25,7 +25,8 @@ public class ProductsController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<Product>>> GetProducts()
+    [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Any, VaryByQueryKeys = new string[] { })]
+    public ActionResult<IEnumerable<Product>> GetProducts()
     {
         _logger.LogInformation("Getting all products (SlowMode: {SlowMode})", EnableSlowEndpoints);
 
@@ -37,7 +38,7 @@ public class ProductsController : ControllerBase
             foreach (var product in Products.Take(20))
             {
                 // Simulate inefficient individual lookups instead of batch query
-                await Task.Delay(Random.Shared.Next(50, 150)); // Each item takes 50-150ms
+                Thread.Sleep(Random.Shared.Next(50, 150)); // Each item takes 50-150ms
                 
                 // CPU-intensive "validation" that was added in bad deployment
                 PerformExpensiveValidation(product);
@@ -47,21 +48,22 @@ public class ProductsController : ControllerBase
         }
         else
         {
-            // HEALTHY: Optimized batch query with caching
-            await Task.Delay(Random.Shared.Next(10, 50)); // 10-50ms delay
+            // HEALTHY: Optimized batch query - immediate response
+            // Removed artificial delay for optimal performance
             return Ok(Products.Take(20));
         }
     }
 
     [HttpGet("{id}")]
-    public async Task<ActionResult<Product>> GetProduct(int id)
+    [ResponseCache(Duration = 300, Location = ResponseCacheLocation.Any, VaryByQueryKeys = new string[] { })]
+    public ActionResult<Product> GetProduct(int id)
     {
         _logger.LogInformation("Getting product {ProductId} (SlowMode: {SlowMode})", id, EnableSlowEndpoints);
 
         if (EnableSlowEndpoints)
         {
             // BAD DEPLOYMENT: Missing index, full table scan simulation
-            await Task.Delay(Random.Shared.Next(200, 500)); // 200-500ms delay
+            Thread.Sleep(Random.Shared.Next(200, 500)); // 200-500ms delay
             
             // Expensive "security check" added in bad deployment
             foreach (var p in Products)
@@ -76,8 +78,8 @@ public class ProductsController : ControllerBase
         }
         else
         {
-            // HEALTHY: Indexed lookup
-            await Task.Delay(Random.Shared.Next(5, 25)); // 5-25ms delay
+            // HEALTHY: Indexed lookup - immediate response
+            // Removed artificial delay for optimal performance
             var product = Products.FirstOrDefault(p => p.Id == id);
             if (product == null)
             {
@@ -88,14 +90,15 @@ public class ProductsController : ControllerBase
     }
 
     [HttpGet("search")]
-    public async Task<ActionResult<IEnumerable<Product>>> SearchProducts([FromQuery] string query)
+    [ResponseCache(Duration = 120, Location = ResponseCacheLocation.Any, VaryByQueryKeys = new string[] { "query" })]
+    public ActionResult<IEnumerable<Product>> SearchProducts([FromQuery] string query)
     {
         _logger.LogInformation("Searching products with query: {Query} (SlowMode: {SlowMode})", query, EnableSlowEndpoints);
 
         if (EnableSlowEndpoints)
         {
             // BAD DEPLOYMENT: Removed search index, doing full text scan with regex
-            await Task.Delay(Random.Shared.Next(500, 1500)); // 500-1500ms delay
+            Thread.Sleep(Random.Shared.Next(500, 1500)); // 500-1500ms delay
             
             // CPU-intensive search without optimization
             var results = new List<Product>();
@@ -114,9 +117,8 @@ public class ProductsController : ControllerBase
         }
         else
         {
-            // HEALTHY: Indexed search
-            await Task.Delay(Random.Shared.Next(20, 100)); // 20-100ms delay
-
+            // HEALTHY: Indexed search - immediate response
+            // Removed artificial delay for optimal performance
             if (string.IsNullOrWhiteSpace(query))
             {
                 return Ok(Products.Take(10));

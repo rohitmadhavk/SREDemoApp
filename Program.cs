@@ -23,6 +23,9 @@ builder.Services.AddHealthChecks()
 // Add controllers for organized endpoints
 builder.Services.AddControllers();
 
+// Add response caching for improved performance
+builder.Services.AddResponseCaching();
+
 // Add configuration for performance modes
 builder.Services.Configure<PerformanceSettings>(builder.Configuration.GetSection("PerformanceSettings"));
 
@@ -35,6 +38,9 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+// Add response caching middleware (before performance monitoring)
+app.UseResponseCaching();
 
 // Add performance monitoring middleware
 app.UseMiddleware<PerformanceMiddleware>();
