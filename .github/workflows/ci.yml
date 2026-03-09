@@ -1,0 +1,105 @@
+name: CI – Build & Performance Gate
+
+on:
+  push:
+    branches: ["main", "copilot/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+  performance-gate:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run app in background
+        run: |
+          dotnet run --configuration Release --no-restore &
+          echo $! > /tmp/app.pid
+          # Wait for the app to start
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5269/health > /dev/null 2>&1; then
+              echo "App is up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Benchmark key endpoints
+        id: benchmark
+        run: |
+          BASELINE_MS=229
+          THRESHOLD_MS=252   # baseline 229ms + 10% = ~252ms
+          ENDPOINTS=(
+            "http://localhost:5269/api/products"
+            "http://localhost:5269/api/products/1"
+            "http://localhost:5269/api/products/search?query=Product"
+            "http://localhost:5269/api/slowproducts"
+            "http://localhost:5269/api/slowproducts/1"
+            "http://localhost:5269/api/cpuintensive"
+          )
+          TOTAL_MS=0
+          REQUEST_COUNT=0
+
+          for ENDPOINT in "${ENDPOINTS[@]}"; do
+            for i in $(seq 1 10); do
+              ELAPSED=$(curl -o /dev/null -s -w "%{time_total}" "$ENDPOINT")
+              MS=$(echo "$ELAPSED * 1000" | bc | cut -d'.' -f1)
+              TOTAL_MS=$((TOTAL_MS + MS))
+              REQUEST_COUNT=$((REQUEST_COUNT + 1))
+              echo "  $ENDPOINT → ${MS}ms"
+            done
+          done
+
+          AVG_MS=$((TOTAL_MS / REQUEST_COUNT))
+          echo "avg_ms=${AVG_MS}" >> "$GITHUB_OUTPUT"
+          echo "threshold_ms=${THRESHOLD_MS}" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "=== Performance Gate Results ==="
+          echo "  Total requests : ${REQUEST_COUNT}"
+          echo "  Average latency: ${AVG_MS}ms"
+          echo "  Baseline       : ${BASELINE_MS}ms"
+          echo "  Threshold      : ${THRESHOLD_MS}ms"
+
+          if [ "$AVG_MS" -gt "$THRESHOLD_MS" ]; then
+            echo "FAIL: avg ${AVG_MS}ms exceeds threshold ${THRESHOLD_MS}ms (baseline ${BASELINE_MS}ms + 10%)"
+            exit 1
+          else
+            echo "PASS: avg ${AVG_MS}ms is within threshold ${THRESHOLD_MS}ms"
+          fi
+
+      - name: Stop app
+        if: always()
+        run: |
+          if [ -f /tmp/app.pid ]; then
+            kill "$(cat /tmp/app.pid)" 2>/dev/null || true
+          fi
