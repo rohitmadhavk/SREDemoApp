@@ -1,0 +1,79 @@
+name: CI - Performance Regression Gate
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-perf-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Start application
+        run: |
+          dotnet run --project SREPerfDemo.csproj --configuration Release --no-build &
+          echo "APP_PID=$!" >> $GITHUB_ENV
+          # Wait for the app to start
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5269/health > /dev/null 2>&1; then
+              echo "Application started successfully"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Performance regression gate
+        run: |
+          BASELINE_MS=200
+          THRESHOLD_MS=240
+          ENDPOINTS=(
+            "http://localhost:5269/api/products"
+            "http://localhost:5269/api/products/1"
+            "http://localhost:5269/api/products/search?query=Product"
+          )
+
+          TOTAL=0
+          COUNT=0
+
+          for ENDPOINT in "${ENDPOINTS[@]}"; do
+            for i in $(seq 1 10); do
+              RESPONSE_MS=$(curl -o /dev/null -s -w "%{time_total}" "$ENDPOINT" | awk '{printf "%.0f", $1 * 1000}')
+              echo "  Request $i to $ENDPOINT: ${RESPONSE_MS}ms"
+              TOTAL=$((TOTAL + RESPONSE_MS))
+              COUNT=$((COUNT + 1))
+            done
+          done
+
+          AVG_MS=$((TOTAL / COUNT))
+          echo "Average response time: ${AVG_MS}ms (baseline: ${BASELINE_MS}ms, threshold: ${THRESHOLD_MS}ms)"
+
+          if [ "$AVG_MS" -gt "$THRESHOLD_MS" ]; then
+            echo "FAIL: Average response time ${AVG_MS}ms exceeds threshold ${THRESHOLD_MS}ms (>20% over ${BASELINE_MS}ms baseline)"
+            exit 1
+          else
+            echo "PASS: Average response time ${AVG_MS}ms is within threshold ${THRESHOLD_MS}ms"
+          fi
+
+      - name: Stop application
+        if: always()
+        run: |
+          if [ -n "$APP_PID" ]; then
+            kill $APP_PID || true
+          fi
