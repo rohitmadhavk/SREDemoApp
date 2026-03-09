@@ -16,85 +16,27 @@ public class CpuIntensiveController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<Product>>> GetProducts()
+    [ResponseCache(Duration = 60)]
+    public ActionResult<IEnumerable<Product>> GetProducts()
     {
         _logger.LogInformation("Getting all products (CPU-intensive version)");
 
-        // Simulate CPU-intensive processing
-        await Task.Run(() =>
-        {
-            // CPU-intensive operations that will cause high CPU usage
-            for (int i = 0; i < 1000000; i++)
-            {
-                // Expensive mathematical operations
-                var result = Math.Sqrt(i) * Math.Pow(i, 2) + Math.Sin(i) * Math.Cos(i);
-                
-                // String operations that consume CPU
-                var hash = $"product_{i}_{result}".GetHashCode();
-                
-                // More CPU work
-                if (i % 10000 == 0)
-                {
-                    Thread.Sleep(1); // Brief pause to allow other threads
-                }
-            }
-        });
-
-        // Additional CPU work - sorting with expensive comparison
         var sortedProducts = Products
-            .OrderBy(p => ExpensiveHash(p.Name))
-            .ThenBy(p => ExpensiveHash(p.Category))
+            .OrderBy(p => p.Name)
+            .ThenBy(p => p.Category)
+            .Take(20)
             .ToList();
 
-        return Ok(sortedProducts.Take(20));
+        return Ok(sortedProducts);
     }
 
     [HttpGet("{id}")]
-    public async Task<ActionResult<Product>> GetProduct(int id)
+    [ResponseCache(Duration = 60)]
+    public ActionResult<Product> GetProduct(int id)
     {
         _logger.LogInformation("Getting product {ProductId} (CPU-intensive version)", id);
 
-        // CPU-intensive N+1 simulation
-        await Task.Run(() =>
-        {
-            for (int i = 0; i < 20; i++)
-            {
-                // Expensive computation per iteration
-                var expensiveResult = 0;
-                for (int j = 0; j < 100000; j++)
-                {
-                    expensiveResult += j * i * id;
-                }
-                
-                // String processing
-                var hash = $"product_{id}_{i}_{expensiveResult}".GetHashCode();
-                
-                Thread.Sleep(10); // Small delay to accumulate CPU time
-            }
-        });
-
-        // Inefficient linear search with CPU work
-        Product? product = null;
-        await Task.Run(() =>
-        {
-            foreach (var p in Products)
-            {
-                // CPU-intensive comparison
-                var comparisonHash = ExpensiveHash(p.Name + p.Category);
-                if (p.Id == id && comparisonHash % 2 == 0)
-                {
-                    product = p;
-                    break;
-                }
-                
-                // Additional CPU work per iteration
-                var work = 0;
-                for (int i = 0; i < 1000; i++)
-                {
-                    work += i * p.Id;
-                }
-            }
-        });
+        var product = Products.FirstOrDefault(p => p.Id == id);
 
         if (product == null)
         {
@@ -105,93 +47,23 @@ public class CpuIntensiveController : ControllerBase
     }
 
     [HttpGet("search")]
-    public async Task<ActionResult<IEnumerable<Product>>> SearchProducts([FromQuery] string query)
+    [ResponseCache(Duration = 30, VaryByQueryKeys = new[] { "query" })]
+    public ActionResult<IEnumerable<Product>> SearchProducts([FromQuery] string query)
     {
         _logger.LogInformation("Searching products with query: {Query} (CPU-intensive version)", query);
 
-        // CPU-intensive search simulation
-        await Task.Run(() =>
-        {
-            // Expensive preprocessing
-            for (int i = 0; i < 500000; i++)
-            {
-                var result = Math.Pow(i, 1.5) + Math.Log(i + 1);
-                var hash = $"search_{query}_{i}_{result}".GetHashCode();
-                
-                if (i % 50000 == 0)
-                {
-                    Thread.Sleep(5);
-                }
-            }
-        });
-
         if (string.IsNullOrWhiteSpace(query))
         {
-            // CPU-intensive random selection
-            var randomProducts = new List<Product>();
-            await Task.Run(() =>
-            {
-                for (int i = 0; i < 10; i++)
-                {
-                    var randomIndex = Random.Shared.Next(Products.Count);
-                    var product = Products[randomIndex];
-
-                    // CPU-intensive processing per product
-                    var expensiveCalc = 0;
-                    for (int j = 0; j < 200000; j++)
-                    {
-                        expensiveCalc += j * randomIndex * ExpensiveHash(product.Name);
-                    }
-
-                    randomProducts.Add(product);
-                }
-            });
-
-            return Ok(randomProducts);
+            return Ok(Products.Take(10));
         }
 
-        // CPU-intensive search with expensive string operations
-        var results = new List<Product>();
-        await Task.Run(() =>
-        {
-            foreach (var product in Products)
-            {
-                // Expensive string operations
-                var productText = $"{product.Name.ToLower()} {product.Category.ToLower()}";
-                var queryWords = query.ToLower().Split(' ');
+        var results = Products
+            .Where(p => p.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                        p.Category.Contains(query, StringComparison.OrdinalIgnoreCase))
+            .Take(10)
+            .ToList();
 
-                foreach (var word in queryWords)
-                {
-                    // CPU-intensive string matching
-                    var matchScore = 0;
-                    for (int i = 0; i < productText.Length; i++)
-                    {
-                        for (int j = 0; j < word.Length; j++)
-                        {
-                            if (i + j < productText.Length && productText[i + j] == word[j])
-                            {
-                                matchScore += ExpensiveHash($"{i}_{j}_{productText[i + j]}");
-                            }
-                        }
-                    }
-
-                    if (matchScore > 1000) // Arbitrary threshold
-                    {
-                        results.Add(product);
-                        break;
-                    }
-                }
-
-                // Additional CPU work per product
-                var hash = 0;
-                for (int i = 0; i < product.Name.Length * 10000; i++)
-                {
-                    hash += i * ExpensiveHash(product.Name);
-                }
-            }
-        });
-
-        return Ok(results.Take(10));
+        return Ok(results);
     }
 
     [HttpGet("cpu-stress")]
@@ -226,12 +98,6 @@ public class CpuIntensiveController : ControllerBase
                 }
 
                 iterations++;
-                
-                // Brief pause to prevent complete CPU lock
-                if (iterations % 1000 == 0)
-                {
-                    Thread.Sleep(1);
-                }
             }
         });
 
@@ -258,10 +124,8 @@ public class CpuIntensiveController : ControllerBase
                 // CPU-intensive work while allocating memory
                 for (int j = 0; j < 100000; j++)
                 {
-                    cpuWork += j * i * ExpensiveHash($"leak_{i}_{j}");
+                    cpuWork += j * i;
                 }
-                
-                Thread.Sleep(20);
             }
         });
 
