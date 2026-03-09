@@ -20,6 +20,9 @@ builder.Services.AddHealthChecks()
             : Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckResult.Degraded($"High memory usage: {memoryUsage / 1024 / 1024}MB");
     });
 
+// Add response caching
+builder.Services.AddResponseCaching();
+
 // Add controllers for organized endpoints
 builder.Services.AddControllers();
 
@@ -35,6 +38,9 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+// Add response caching middleware (must be before UseMiddleware<PerformanceMiddleware>)
+app.UseResponseCaching();
 
 // Add performance monitoring middleware
 app.UseMiddleware<PerformanceMiddleware>();
