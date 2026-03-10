@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+  performance-regression-gate:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build Release
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Start application
+        run: |
+          dotnet run --configuration Release --no-build &
+          echo $! > /tmp/app.pid
+          # Wait up to 60 seconds (30 iterations x 2 seconds) for app to be ready
+          STARTUP_TIMEOUT_ITERATIONS=30
+          for i in $(seq 1 $STARTUP_TIMEOUT_ITERATIONS); do
+            if curl -sf http://localhost:5269/health > /dev/null 2>&1; then
+              echo "Application is ready"
+              break
+            fi
+            sleep 2
+          done
+        env:
+          ASPNETCORE_URLS: http://localhost:5269
+          ASPNETCORE_ENVIRONMENT: Production
+
+      - name: Benchmark key endpoints
+        id: benchmark
+        env:
+          PERF_THRESHOLD_MS: 240
+          BENCHMARK_REQUESTS: 10
+        run: |
+          BASE_URL="http://localhost:5269"
+          FAILED=false
+
+          benchmark_endpoint() {
+            local url="$1"
+            local name="$2"
+            local total=0
+            for i in $(seq 1 $BENCHMARK_REQUESTS); do
+              ms=$(curl -o /dev/null -s -w "%{time_total}" "$url")
+              ms=$(echo "$ms * 1000" | bc)
+              total=$(echo "$total + $ms" | bc)
+            done
+            avg=$(echo "scale=2; $total / $BENCHMARK_REQUESTS" | bc)
+            echo "  $name: avg ${avg}ms (threshold: ${PERF_THRESHOLD_MS}ms)"
+            result=$(echo "$avg > $PERF_THRESHOLD_MS" | bc)
+            if [ "$result" -eq 1 ]; then
+              echo "  FAIL: $name exceeded threshold (${avg}ms > ${PERF_THRESHOLD_MS}ms)"
+              FAILED=true
+            fi
+          }
+
+          echo "Benchmarking endpoints (${BENCHMARK_REQUESTS} requests each, threshold: ${PERF_THRESHOLD_MS}ms)..."
+          benchmark_endpoint "$BASE_URL/api/products" "GET /api/products"
+          benchmark_endpoint "$BASE_URL/api/products/1" "GET /api/products/{id}"
+          benchmark_endpoint "$BASE_URL/api/products/search?query=book" "GET /api/products/search"
+
+          if [ "$FAILED" = "true" ]; then
+            echo "Performance regression gate FAILED"
+            exit 1
+          else
+            echo "Performance regression gate PASSED"
+          fi
+
+      - name: Stop application
+        if: always()
+        run: |
+          if [ -f /tmp/app.pid ]; then
+            kill $(cat /tmp/app.pid) 2>/dev/null || true
+          fi
