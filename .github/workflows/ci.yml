@@ -1,0 +1,100 @@
+name: CI – Build & Performance Gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+  performance-gate:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Start application
+        run: |
+          dotnet run --configuration Release --no-build &
+          echo $! > /tmp/app.pid
+          # Wait for the app to be ready
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:5269/health > /dev/null 2>&1; then
+              echo "App is ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run performance benchmark
+        run: |
+          BASELINE_MS=200
+          THRESHOLD_MS=240   # +20% over baseline
+
+          bench_endpoint() {
+            local url="$1"
+            local label="$2"
+            local total=0
+            local n=10
+            for i in $(seq 1 $n); do
+              ms=$(curl -o /dev/null -s -w "%{time_total}" "$url")
+              ms=$(echo "$ms * 1000" | bc)
+              total=$(echo "$total + $ms" | bc)
+            done
+            avg=$(echo "scale=2; $total / $n" | bc)
+            echo "  $label: avg ${avg}ms (n=$n)"
+            echo "$avg"
+          }
+
+          echo "=== Performance Benchmark ==="
+          avg1=$(bench_endpoint "http://localhost:5269/api/products"          "GET /api/products")
+          avg2=$(bench_endpoint "http://localhost:5269/api/products/1"         "GET /api/products/1")
+          avg3=$(bench_endpoint "http://localhost:5269/api/products/search?query=book" "GET /api/products/search")
+
+          overall=$(echo "scale=2; ($avg1 + $avg2 + $avg3) / 3" | bc)
+          echo "Overall avg: ${overall}ms  (threshold: ${THRESHOLD_MS}ms)"
+
+          result=$(echo "$overall > $THRESHOLD_MS" | bc)
+          if [ "$result" -eq 1 ]; then
+            echo "FAIL: avg response time ${overall}ms exceeds threshold ${THRESHOLD_MS}ms (baseline ${BASELINE_MS}ms + 20%)"
+            exit 1
+          else
+            echo "PASS: avg response time ${overall}ms is within threshold ${THRESHOLD_MS}ms"
+          fi
+
+      - name: Stop application
+        if: always()
+        run: |
+          if [ -f /tmp/app.pid ]; then
+            kill $(cat /tmp/app.pid) 2>/dev/null || true
+          fi
