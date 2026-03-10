@@ -1,0 +1,102 @@
+name: CI - Build and Performance Gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore
+
+  performance-gate:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore
+
+      - name: Start application
+        run: |
+          dotnet run --no-build &
+          APP_PID=$!
+          echo "APP_PID=$APP_PID" >> $GITHUB_ENV
+          # Wait for application to start
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5269/health > /dev/null 2>&1; then
+              echo "Application started"
+              break
+            fi
+            echo "Waiting for app to start... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run performance benchmarks
+        run: |
+          THRESHOLD_MS=240
+          FAIL=0
+
+          benchmark_endpoint() {
+            local url=$1
+            local name=$2
+            local total=0
+            local count=10
+
+            for i in $(seq 1 $count); do
+              ms=$(curl -o /dev/null -s -w "%{time_total}" "$url" | awk '{printf "%d", $1 * 1000}')
+              total=$((total + ms))
+            done
+
+            avg=$((total / count))
+            echo "[$name] avg response time: ${avg}ms (threshold: ${THRESHOLD_MS}ms)"
+
+            if [ "$avg" -gt "$THRESHOLD_MS" ]; then
+              echo "FAIL: [$name] avg ${avg}ms exceeds ${THRESHOLD_MS}ms threshold"
+              FAIL=1
+            fi
+          }
+
+          benchmark_endpoint "http://localhost:5269/api/products" "GET /api/products"
+          benchmark_endpoint "http://localhost:5269/api/products/1" "GET /api/products/1"
+          benchmark_endpoint "http://localhost:5269/api/products/search?query=electronics" "GET /api/products/search"
+
+          if [ "$FAIL" -eq 1 ]; then
+            echo "Performance gate FAILED - avg response time exceeds 240ms baseline"
+            exit 1
+          fi
+
+          echo "Performance gate PASSED - all endpoints within threshold"
+
+      - name: Stop application
+        if: always()
+        run: |
+          if [ -n "$APP_PID" ]; then
+            kill $APP_PID 2>/dev/null || true
+          fi
